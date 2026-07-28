@@ -1,5 +1,6 @@
 import { useState, useRef, useCallback, useEffect } from 'react';
 import PitchPlease from '@markusstrasser/pitchplease';
+import { midiToFrequency, midiToNoteName, NOTE_NAMES } from '../lib/musicTheory';
 
 /**
  * Microphone pitch/chord detection powered by PitchPlease.
@@ -11,11 +12,16 @@ export function useAudioEngine(settings = {}) {
   const [currentChord, setCurrentChord] = useState(null);
   const [detectedNotes, setDetectedNotes] = useState([]);
   const [spectrumData, setSpectrumData] = useState(null);
+  /** Live monophonic pitch for learner mode */
+  const [currentPitch, setCurrentPitch] = useState(null);
 
   const detectorRef = useRef(null);
   const settingsRef = useRef(settings);
   const lastChordNameRef = useRef(null);
   const silenceFramesRef = useRef(0);
+  const pitchHoldRef = useRef({ midi: null, frames: 0, lastEmitted: null });
+  const lastPitchUiAtRef = useRef(0);
+  const lastSpectrumUiAtRef = useRef(0);
 
   useEffect(() => {
     settingsRef.current = settings;
@@ -23,18 +29,23 @@ export function useAudioEngine(settings = {}) {
 
   const handleUpdate = useCallback((data) => {
     const sensitivity = settingsRef.current?.sensitivity ?? 0.5;
+    const tuningA4 = settingsRef.current?.tuningA4 ?? 440;
     // Higher sensitivity = lower energy gate
     const energyGate = Math.max(8, Math.round((1 - sensitivity) * 60));
 
-    // Copy spectrum so React state is not tied to the reusable buffer
-    if (data.spectrum?.length) {
+    // Throttle spectrum UI updates (~15 fps)
+    const now = performance.now();
+    if (data.spectrum?.length && now - lastSpectrumUiAtRef.current > 66) {
+      lastSpectrumUiAtRef.current = now;
       setSpectrumData(Array.from(data.spectrum));
     }
 
     if (data.maxEnergy < energyGate) {
       silenceFramesRef.current += 1;
-      if (silenceFramesRef.current > 20) {
+      if (silenceFramesRef.current > 12) {
         setDetectedNotes([]);
+        setCurrentPitch(null);
+        pitchHoldRef.current = { midi: null, frames: 0, lastEmitted: pitchHoldRef.current.lastEmitted };
         if (lastChordNameRef.current) {
           lastChordNameRef.current = null;
           setCurrentChord(null);
@@ -49,6 +60,65 @@ export function useAudioEngine(settings = {}) {
       (pc) => PitchPlease.NOTE_NAMES[pc] ?? PitchPlease.midiToNote(60 + pc)
     );
     setDetectedNotes(notes);
+
+    // Primary fundamental for monophonic (singing) tracking
+    const fundCount = data.fundCount || 0;
+    if (fundCount > 0 && data.fundMidis?.length) {
+      // Prefer the lowest strong fundamental (typical for voice)
+      let bestMidi = data.fundMidis[0];
+      for (let i = 1; i < fundCount; i++) {
+        const m = data.fundMidis[i];
+        if (m > 30 && m < bestMidi) bestMidi = m;
+      }
+
+      if (bestMidi > 30 && bestMidi < 100) {
+        const rounded = Math.round(bestMidi);
+        const pitchClass = ((rounded % 12) + 12) % 12;
+        const hold = pitchHoldRef.current;
+
+        // Stability: require a few frames near the same pitch class
+        if (
+          hold.midi != null &&
+          Math.abs(bestMidi - hold.midi) < 0.6
+        ) {
+          hold.frames += 1;
+        } else {
+          hold.midi = bestMidi;
+          hold.frames = 1;
+        }
+
+        const stable = hold.frames >= 2;
+        const noteChanged =
+          hold.lastEmitted == null ||
+          Math.abs(bestMidi - hold.lastEmitted) >= 0.45;
+
+        // Throttle pitch UI (~25 fps) while keeping hold tracking per-frame
+        if (now - lastPitchUiAtRef.current > 40) {
+          lastPitchUiAtRef.current = now;
+          setCurrentPitch({
+            midi: bestMidi,
+            roundedMidi: rounded,
+            pitchClass,
+            note: midiToNoteName(bestMidi, true),
+            noteClass: NOTE_NAMES[pitchClass],
+            frequency: midiToFrequency(bestMidi, tuningA4),
+            stable,
+            noteChanged: stable && noteChanged,
+            timestamp: Date.now(),
+          });
+        }
+
+        if (stable && noteChanged) {
+          hold.lastEmitted = bestMidi;
+        }
+      }
+    } else {
+      // No fundamental — clear after brief hang
+      silenceFramesRef.current += 1;
+      if (silenceFramesRef.current > 8) {
+        setCurrentPitch(null);
+      }
+    }
 
     if (data.stable && data.chord) {
       const name = data.chord.full || data.chord.root;
@@ -128,10 +198,12 @@ export function useAudioEngine(settings = {}) {
 
     lastChordNameRef.current = null;
     silenceFramesRef.current = 0;
+    pitchHoldRef.current = { midi: null, frames: 0, lastEmitted: null };
     setIsListening(false);
     setCurrentChord(null);
     setDetectedNotes([]);
     setSpectrumData(null);
+    setCurrentPitch(null);
   }, []);
 
   // Full cleanup on unmount
@@ -150,6 +222,7 @@ export function useAudioEngine(settings = {}) {
     currentChord,
     detectedNotes,
     spectrumData,
+    currentPitch,
     startAudio,
     stopAudio,
   };
