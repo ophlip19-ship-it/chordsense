@@ -8,9 +8,29 @@ import {
 
 /**
  * Learner-mode session: base key, live pitch analysis, melodic progression history.
+ * options.requireVoice (default true): ignore frames not tagged as real voice.
  */
 export function useLearnerSession(currentPitch, currentChord, options = {}) {
   const centsTolerance = options.centsTolerance ?? DEFAULT_CENTS_TOLERANCE;
+  const requireVoice = options.requireVoice !== false;
+  const minVoiceConfidence = options.minVoiceConfidence ?? 0.5;
+
+  /** Only accept stable, voice-gated pitches for learning. */
+  const isValidVoicePitch = useCallback(
+    (pitch) => {
+      if (!pitch?.stable || pitch.midi == null) return false;
+      if (!requireVoice) return true;
+      if (pitch.isVoice === false) return false;
+      if (
+        typeof pitch.voiceConfidence === 'number' &&
+        pitch.voiceConfidence < minVoiceConfidence
+      ) {
+        return false;
+      }
+      return true;
+    },
+    [requireVoice, minVoiceConfidence]
+  );
 
   const [baseKey, setBaseKeyState] = useState(() => makeKeyInfo('C', 'major'));
   const [melodyHistory, setMelodyHistory] = useState([]);
@@ -36,15 +56,33 @@ export function useLearnerSession(currentPitch, currentChord, options = {}) {
   }, []);
 
   const pitchAnalysis = useMemo(() => {
-    if (!currentPitch?.midi) {
+    // Live meter: show pitch when voice is present (even while stabilizing).
+    // Never analyze frames explicitly tagged as noise.
+    if (
+      !currentPitch?.midi ||
+      (requireVoice && currentPitch.isVoice === false)
+    ) {
+      return analyzePitchAgainstKey(null, baseKey, { centsTolerance });
+    }
+    if (
+      requireVoice &&
+      typeof currentPitch.voiceConfidence === 'number' &&
+      currentPitch.voiceConfidence < minVoiceConfidence * 0.85
+    ) {
       return analyzePitchAgainstKey(null, baseKey, { centsTolerance });
     }
     return analyzePitchAgainstKey(currentPitch.midi, baseKey, { centsTolerance });
-  }, [currentPitch, baseKey, centsTolerance]);
+  }, [
+    currentPitch,
+    baseKey,
+    centsTolerance,
+    requireVoice,
+    minVoiceConfidence,
+  ]);
 
-  // Live accuracy counters (frame-level, only when pitch is active)
+  // Live accuracy counters (frame-level, only when real voice is active)
   useEffect(() => {
-    if (!currentPitch?.stable || !pitchAnalysis.active) return;
+    if (!isValidVoicePitch(currentPitch) || !pitchAnalysis.active) return;
 
     setStats((prev) => {
       const next = {
@@ -59,11 +97,11 @@ export function useLearnerSession(currentPitch, currentChord, options = {}) {
       };
       return next;
     });
-  }, [currentPitch?.timestamp, currentPitch?.stable, pitchAnalysis]);
+  }, [currentPitch?.timestamp, currentPitch, pitchAnalysis, isValidVoicePitch]);
 
-  // Append distinct held notes to melodic progression
+  // Append distinct held notes to melodic progression (voice only)
   useEffect(() => {
-    if (!currentPitch?.stable || !pitchAnalysis.active) return;
+    if (!isValidVoicePitch(currentPitch) || !pitchAnalysis.active) return;
 
     const noteClass = pitchAnalysis.sungNoteClass || currentPitch.noteClass;
     const now = currentPitch.timestamp || Date.now();
@@ -109,11 +147,19 @@ export function useLearnerSession(currentPitch, currentChord, options = {}) {
         },
       ].slice(-48);
     });
-  }, [currentPitch, pitchAnalysis]);
+  }, [currentPitch, pitchAnalysis, isValidVoicePitch]);
 
   // Track chords under the locked base key (song harmony while learning)
+  // Only when confidence suggests real musical content (not noise spikes)
   useEffect(() => {
     if (!currentChord?.name) return;
+    if (
+      requireVoice &&
+      typeof currentChord.confidence === 'number' &&
+      currentChord.confidence < minVoiceConfidence
+    ) {
+      return;
+    }
     if (currentChord.name === lastChordRef.current) return;
     lastChordRef.current = currentChord.name;
 
@@ -130,7 +176,7 @@ export function useLearnerSession(currentPitch, currentChord, options = {}) {
         },
       ].slice(-16);
     });
-  }, [currentChord]);
+  }, [currentChord, requireVoice, minVoiceConfidence]);
 
   const progression = useMemo(
     () => analyzeSongProgression(melodyHistory, baseKey),

@@ -22,14 +22,17 @@ export default function App() {
     detectedNotes,
     spectrumData,
     currentPitch,
+    voiceActivity,
     startAudio,
     stopAudio,
-  } = useAudioEngine(settings);
+  } = useAudioEngine(settings, mode);
 
   const [history, setHistory] = useState([]);
   const [lockedKey, setLockedKey] = useState(null);
 
-  const learner = useLearnerSession(currentPitch, currentChord);
+  const learner = useLearnerSession(currentPitch, currentChord, {
+    requireVoice: true,
+  });
 
   // Append stable detected chords to progression history (analyze mode)
   useEffect(() => {
@@ -165,8 +168,8 @@ export default function App() {
             {isLearn ? (
               <>
                 Pick a <strong>base key</strong>, click <strong>Start Coaching</strong> (or press
-                Space), then sing. ChordSense tracks pitch, flags notes that are too high or too
-                low, and analyzes your song progression.
+                Space), then sing. ChordSense filters noise, locks onto real voice, flags notes that
+                are too high or too low, and analyzes your song progression.
               </>
             ) : (
               <>
@@ -181,6 +184,7 @@ export default function App() {
           <LearnerPanel
             isListening={isListening}
             currentPitch={currentPitch}
+            voiceActivity={voiceActivity}
             baseKey={learner.baseKey}
             setBaseKey={learner.setBaseKey}
             pitchAnalysis={learner.pitchAnalysis}

@@ -29,6 +29,7 @@ const ACTION_ICONS = {
 export function LearnerPanel({
   isListening,
   currentPitch,
+  voiceActivity,
   baseKey,
   setBaseKey,
   pitchAnalysis,
@@ -57,7 +58,8 @@ export function LearnerPanel({
             </div>
           </div>
           <div className="text-xs text-slate-500 max-w-xs text-right">
-            Sing in this key — off-pitch notes are flagged as too high or too low.
+            Sing in this key — only real voice is tracked; noise is ignored. Off-pitch
+            notes are flagged high or low.
           </div>
         </div>
 
@@ -139,6 +141,7 @@ export function LearnerPanel({
         pitchAnalysis={pitchAnalysis}
         currentPitch={currentPitch}
         isListening={isListening}
+        voiceActivity={voiceActivity}
       />
 
       {/* Suggestions + live accuracy */}

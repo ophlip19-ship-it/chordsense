@@ -1,17 +1,25 @@
 import React from 'react';
-import { ArrowDown, ArrowUp, Check, AlertTriangle } from 'lucide-react';
+import { ArrowDown, ArrowUp, Check, AlertTriangle, Mic, MicOff, AudioLines } from 'lucide-react';
 
 /**
  * Visual pitch meter: cents needle + high/low/in-tune status.
+ * Shows voice-gate status so noise is not mistaken for singing.
  */
-export function PitchMonitor({ pitchAnalysis, currentPitch, isListening }) {
+export function PitchMonitor({
+  pitchAnalysis,
+  currentPitch,
+  isListening,
+  voiceActivity,
+}) {
   const cents = pitchAnalysis?.cents ?? 0;
   // Clamp needle to ±50 cents visual range
   const clamped = Math.max(-50, Math.min(50, cents));
   const needlePercent = 50 + (clamped / 50) * 50;
 
   const status = pitchAnalysis?.status || 'idle';
-  const active = pitchAnalysis?.active && isListening;
+  const voiceStatus = voiceActivity?.status || 'idle';
+  const isVoice = voiceActivity?.isVoice || currentPitch?.isVoice;
+  const active = pitchAnalysis?.active && isListening && isVoice !== false;
 
   const statusStyles = {
     idle: 'border-slate-700 text-slate-400',
@@ -23,6 +31,49 @@ export function PitchMonitor({ pitchAnalysis, currentPitch, isListening }) {
     unknown: 'border-slate-600 text-slate-300',
   };
 
+  const voiceBadge = (() => {
+    if (!isListening) {
+      return {
+        label: 'Mic off',
+        className: 'border-slate-700 text-slate-500 bg-slate-900/40',
+        Icon: MicOff,
+      };
+    }
+    if (voiceStatus === 'voice' || (isVoice && active)) {
+      return {
+        label: 'Voice locked',
+        className: 'border-emerald-700/60 text-emerald-300 bg-emerald-950/40',
+        Icon: Mic,
+      };
+    }
+    if (voiceStatus === 'warming') {
+      return {
+        label: 'Locking voice…',
+        className: 'border-cyan-700/50 text-cyan-300 bg-cyan-950/30',
+        Icon: AudioLines,
+      };
+    }
+    if (voiceStatus === 'noise') {
+      return {
+        label: 'Noise filtered',
+        className: 'border-slate-600 text-slate-400 bg-slate-800/50',
+        Icon: MicOff,
+      };
+    }
+    if (voiceStatus === 'silence' || voiceStatus === 'listening') {
+      return {
+        label: 'Listening for voice',
+        className: 'border-slate-600 text-slate-400 bg-slate-900/40',
+        Icon: AudioLines,
+      };
+    }
+    return {
+      label: isListening ? 'Listening…' : 'Idle',
+      className: 'border-slate-700 text-slate-400',
+      Icon: Mic,
+    };
+  })();
+
   const StatusIcon =
     status === 'in-tune'
       ? Check
@@ -32,19 +83,45 @@ export function PitchMonitor({ pitchAnalysis, currentPitch, isListening }) {
           ? ArrowDown
           : AlertTriangle;
 
+  const VoiceIcon = voiceBadge.Icon;
+  const confPct =
+    typeof voiceActivity?.confidence === 'number'
+      ? Math.round(voiceActivity.confidence * 100)
+      : typeof currentPitch?.voiceConfidence === 'number'
+        ? Math.round(currentPitch.voiceConfidence * 100)
+        : null;
+
   return (
     <div className="bg-slate-900/80 border border-slate-800 rounded-2xl p-6 shadow-2xl">
-      <div className="flex items-center justify-between mb-4 gap-3">
+      <div className="flex items-center justify-between mb-4 gap-3 flex-wrap">
         <div className="text-xs font-semibold text-emerald-400 uppercase tracking-widest">
           Pitch Monitor
         </div>
-        <div
-          className={`flex items-center gap-1.5 text-xs font-medium px-2.5 py-1 rounded-full border ${
-            statusStyles[status] || statusStyles.idle
-          }`}
-        >
-          {active && <StatusIcon className="w-3.5 h-3.5" />}
-          {active ? pitchAnalysis.message : isListening ? 'Listening…' : 'Idle'}
+        <div className="flex items-center gap-2 flex-wrap justify-end">
+          <div
+            className={`flex items-center gap-1.5 text-xs font-medium px-2.5 py-1 rounded-full border ${voiceBadge.className}`}
+            title="Voice activity gate — ambient noise is ignored in learn mode"
+          >
+            <VoiceIcon className="w-3.5 h-3.5" />
+            {voiceBadge.label}
+            {confPct != null && isListening && voiceStatus === 'voice' ? (
+              <span className="font-mono text-[10px] opacity-80">{confPct}%</span>
+            ) : null}
+          </div>
+          <div
+            className={`flex items-center gap-1.5 text-xs font-medium px-2.5 py-1 rounded-full border ${
+              statusStyles[status] || statusStyles.idle
+            }`}
+          >
+            {active && <StatusIcon className="w-3.5 h-3.5" />}
+            {active
+              ? pitchAnalysis.message
+              : isListening
+                ? voiceStatus === 'noise'
+                  ? 'Ignoring noise'
+                  : 'Waiting for voice…'
+                : 'Idle'}
+          </div>
         </div>
       </div>
 
@@ -62,7 +139,10 @@ export function PitchMonitor({ pitchAnalysis, currentPitch, isListening }) {
           </div>
           {active && pitchAnalysis.targetNoteClass && (
             <div className="text-xs text-slate-500 mt-1">
-              Target: <span className="text-emerald-400 font-semibold">{pitchAnalysis.targetNoteClass}</span>
+              Target:{' '}
+              <span className="text-emerald-400 font-semibold">
+                {pitchAnalysis.targetNoteClass}
+              </span>
               {typeof pitchAnalysis.cents === 'number' && (
                 <span className="ml-1 font-mono">
                   ({pitchAnalysis.cents > 0 ? '+' : ''}
@@ -83,9 +163,9 @@ export function PitchMonitor({ pitchAnalysis, currentPitch, isListening }) {
             />
             {/* Center line */}
             <div className="absolute left-1/2 top-[-4px] bottom-[-4px] w-0.5 bg-slate-400/80 -translate-x-1/2" />
-            {/* Needle */}
+            {/* Needle — smoother transition to reflect fluctuation damping */}
             <div
-              className={`absolute top-1/2 w-3.5 h-3.5 rounded-full border-2 shadow-lg transition-all duration-100 -translate-x-1/2 -translate-y-1/2 ${
+              className={`absolute top-1/2 w-3.5 h-3.5 rounded-full border-2 shadow-lg transition-all duration-150 -translate-x-1/2 -translate-y-1/2 ${
                 !active
                   ? 'bg-slate-600 border-slate-500 opacity-40'
                   : pitchAnalysis.inTune
@@ -106,6 +186,9 @@ export function PitchMonitor({ pitchAnalysis, currentPitch, isListening }) {
               Sharp / High <ArrowUp className="w-3 h-3 text-amber-400" />
             </span>
           </div>
+          <p className="text-[11px] text-slate-500 mt-3 text-center md:text-left">
+            Noise and room tone are filtered — only sustained voice is scored.
+          </p>
         </div>
       </div>
     </div>
